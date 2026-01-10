@@ -1,201 +1,235 @@
 // ============================================
-// MODEL DE TASCA - IN-MEMORY DATABASE
+// MODEL DE TASCA - MONGODB
 // ============================================
 
-// Base de dades en memòria (array de tasques)
-let tasks = [];
-let currentId = 1;
-
-// Imatge per defecte
-const DEFAULT_IMAGE = 'http://localhost:3000/images/default-task.jpg';
+const mongoose = require('mongoose');
 
 // ============================================
-// CLASSE TASK
+// ESQUEMA DE TASCA
 // ============================================
 
-class Task {
-  constructor(data) {
-    this.id = currentId++;
-    this.title = data.title;
-    this.description = data.description || '';
-    this.completed = data.completed || false;
-    this.cost = data.cost || 0;
-    this.hours_estimated = data.hours_estimated || 0;
-    this.hours_real = data.hours_real || 0;
-    this.image = data.image || DEFAULT_IMAGE;
-    this.createdAt = new Date();
-    this.updatedAt = new Date();
+const taskSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: [true, 'El títol és obligatori'],
+    trim: true,
+    maxlength: [100, 'El títol no pot tenir més de 100 caràcters']
+  },
+  description: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'La descripció no pot tenir més de 500 caràcters'],
+    default: ''
+  },
+  completed: {
+    type: Boolean,
+    default: false
+  },
+  cost: {
+    type: Number,
+    min: [0, 'El cost no pot ser negatiu'],
+    default: 0
+  },
+  hours_estimated: {
+    type: Number,
+    min: [0, 'Les hores estimades no poden ser negatives'],
+    default: 0
+  },
+  hours_real: {
+    type: Number,
+    min: [0, 'Les hores reals no poden ser negatives'],
+    default: 0
+  },
+  image: {
+    type: String,
+    default: 'http://localhost:3000/images/default-task.jpg'
+  },
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'La tasca ha de tenir un usuari assignat'],
+    index: true
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
   }
-}
+}, {
+  timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }
+});
 
 // ============================================
-// MÈTODES DEL MODEL
+// ÍNDEXS PER MILLORAR RENDIMENT
 // ============================================
 
-const TaskModel = {
+taskSchema.index({ user: 1, createdAt: -1 }); // Cerca per usuari i data
+taskSchema.index({ user: 1, completed: 1 }); // Cerca per usuari i estat
+
+// ============================================
+// MÈTODES DE L'ESQUEMA
+// ============================================
+
+// Mètode per calcular estadístiques
+taskSchema.statics.getStats = async function(userId) {
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - now.getDay());
+  startOfWeek.setHours(0, 0, 0, 0);
   
-  // Obtenir totes les tasques
-  getAll: () => {
-    return new Promise((resolve) => {
-      resolve(tasks);
-    });
-  },
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
 
-  // Obtenir tasca per ID
-  getById: (id) => {
-    return new Promise((resolve, reject) => {
-      const task = tasks.find(t => t.id === parseInt(id));
-      if (task) {
-        resolve(task);
-      } else {
-        reject(new Error('Tasca no trobada'));
-      }
-    });
-  },
+  // Filtrar per usuari
+  const query = { user: userId };
 
-  // Crear nova tasca
-  create: (taskData) => {
-    return new Promise((resolve) => {
-      const newTask = new Task(taskData);
-      tasks.push(newTask);
-      resolve(newTask);
-    });
-  },
+  // Estadístiques bàsiques
+  const totalTasks = await this.countDocuments(query);
+  const completedTasks = await this.countDocuments({ ...query, completed: true });
+  const pendingTasks = totalTasks - completedTasks;
+  const completionRate = totalTasks > 0 ? ((completedTasks / totalTasks) * 100).toFixed(2) : 0;
 
-  // Actualitzar tasca
-  update: (id, taskData) => {
-    return new Promise((resolve, reject) => {
-      const index = tasks.findIndex(t => t.id === parseInt(id));
-      
-      if (index === -1) {
-        reject(new Error('Tasca no trobada'));
-        return;
-      }
-
-      // Actualitzar només els camps proporcionats
-      tasks[index] = {
-        ...tasks[index],
-        ...taskData,
-        id: tasks[index].id, // Mantenir l'ID original
-        createdAt: tasks[index].createdAt, // Mantenir data creació
-        updatedAt: new Date()
-      };
-
-      resolve(tasks[index]);
-    });
-  },
-
-  // Eliminar tasca
-  delete: (id) => {
-    return new Promise((resolve, reject) => {
-      const index = tasks.findIndex(t => t.id === parseInt(id));
-      
-      if (index === -1) {
-        reject(new Error('Tasca no trobada'));
-        return;
-      }
-
-      const deletedTask = tasks[index];
-      tasks.splice(index, 1);
-      resolve(deletedTask);
-    });
-  },
-
-  // Restablir imatge per defecte
-  resetImageToDefault: (id) => {
-    return new Promise((resolve, reject) => {
-      const index = tasks.findIndex(t => t.id === parseInt(id));
-      
-      if (index === -1) {
-        reject(new Error('Tasca no trobada'));
-        return;
-      }
-
-      tasks[index].image = DEFAULT_IMAGE;
-      tasks[index].updatedAt = new Date();
-      
-      resolve(tasks[index]);
-    });
-  },
-
-  // Obtenir estadístiques
-  getStats: () => {
-    return new Promise((resolve) => {
-      const now = new Date();
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
-      const startOfDay = new Date(now.setHours(0, 0, 0, 0));
-
-      // Estadístiques bàsiques
-      const totalTasks = tasks.length;
-      const completedTasks = tasks.filter(t => t.completed).length;
-      const pendingTasks = totalTasks - completedTasks;
-      const completionRate = totalTasks > 0 ? ((completedTasks / totalTasks) * 100).toFixed(2) : 0;
-
-      // Estadístiques econòmiques
-      const totalCost = tasks.reduce((sum, t) => sum + (t.cost || 0), 0);
-      const completedTasksCost = tasks.filter(t => t.completed).reduce((sum, t) => sum + (t.cost || 0), 0);
-      const pendingTasksCost = totalCost - completedTasksCost;
-      const averageCostPerTask = totalTasks > 0 ? (totalCost / totalTasks).toFixed(2) : 0;
-
-      // Estadístiques temporals
-      const totalHoursEstimated = tasks.reduce((sum, t) => sum + (t.hours_estimated || 0), 0);
-      const totalHoursReal = tasks.reduce((sum, t) => sum + (t.hours_real || 0), 0);
-      const timeEfficiency = totalHoursEstimated > 0 ? ((totalHoursReal / totalHoursEstimated) * 100).toFixed(2) : 0;
-      const hoursDifference = totalHoursReal - totalHoursEstimated;
-      const hoursSaved = hoursDifference < 0 ? Math.abs(hoursDifference) : 0;
-
-      // Estadístiques d'imatges
-      const tasksWithDescription = tasks.filter(t => t.description && t.description.trim() !== '').length;
-      const defaultImages = tasks.filter(t => t.image === DEFAULT_IMAGE).length;
-      const customImages = totalTasks - defaultImages;
-      const cloudinaryImages = tasks.filter(t => t.image.includes('cloudinary')).length;
-      const localImages = tasks.filter(t => t.image.includes('/uploads/')).length;
-
-      // Estadístiques recents
-      const tasksThisMonth = tasks.filter(t => new Date(t.createdAt) >= startOfMonth).length;
-      const tasksThisWeek = tasks.filter(t => new Date(t.createdAt) >= startOfWeek).length;
-      const tasksToday = tasks.filter(t => new Date(t.createdAt) >= startOfDay).length;
-      const completedThisMonth = tasks.filter(t => t.completed && new Date(t.updatedAt) >= startOfMonth).length;
-
-      resolve({
-        overview: {
-          totalTasks,
-          completedTasks,
-          pendingTasks,
-          completionRate: parseFloat(completionRate)
-        },
-        financial: {
-          totalCost,
-          completedTasksCost,
-          pendingTasksCost,
-          averageCostPerTask: parseFloat(averageCostPerTask)
-        },
-        time: {
-          totalHoursEstimated,
-          totalHoursReal,
-          timeEfficiency: parseFloat(timeEfficiency),
-          hoursSaved
-        },
-        recent: {
-          tasksThisMonth,
-          completedThisMonth,
-          tasksThisWeek,
-          tasksToday
-        },
-        misc: {
-          tasksWithDescription,
-          customImages,
-          defaultImages,
-          imageStats: {
-            cloudinaryImages,
-            localImages,
-            defaultImages
+  // Estadístiques econòmiques
+  const financialAggregation = await this.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: null,
+        totalCost: { $sum: '$cost' },
+        completedCost: {
+          $sum: {
+            $cond: [{ $eq: ['$completed', true] }, '$cost', 0]
           }
         }
-      });
-    });
-  }
+      }
+    }
+  ]);
+
+  const totalCost = financialAggregation[0]?.totalCost || 0;
+  const completedTasksCost = financialAggregation[0]?.completedCost || 0;
+  const pendingTasksCost = totalCost - completedTasksCost;
+  const averageCostPerTask = totalTasks > 0 ? (totalCost / totalTasks).toFixed(2) : 0;
+
+  // Estadístiques temporals
+  const timeAggregation = await this.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: null,
+        totalHoursEstimated: { $sum: '$hours_estimated' },
+        totalHoursReal: { $sum: '$hours_real' }
+      }
+    }
+  ]);
+
+  const totalHoursEstimated = timeAggregation[0]?.totalHoursEstimated || 0;
+  const totalHoursReal = timeAggregation[0]?.totalHoursReal || 0;
+  const timeEfficiency = totalHoursEstimated > 0 ? ((totalHoursReal / totalHoursEstimated) * 100).toFixed(2) : 0;
+  const hoursDifference = totalHoursReal - totalHoursEstimated;
+  const hoursSaved = hoursDifference < 0 ? Math.abs(hoursDifference) : 0;
+
+  // Estadístiques d'imatges
+  const imageStats = await this.aggregate([
+    { $match: query },
+    {
+      $group: {
+        _id: {
+          $cond: [
+            { $eq: ['$image', 'http://localhost:3000/images/default-task.jpg'] },
+            'default',
+            {
+              $cond: [
+                { $regexMatch: { input: '$image', regex: /cloudinary/ } },
+                'cloudinary',
+                'local'
+              ]
+            }
+          ]
+        },
+        count: { $sum: 1 }
+      }
+    }
+  ]);
+
+  const defaultImages = imageStats.find(s => s._id === 'default')?.count || 0;
+  const cloudinaryImages = imageStats.find(s => s._id === 'cloudinary')?.count || 0;
+  const localImages = imageStats.find(s => s._id === 'local')?.count || 0;
+  const customImages = cloudinaryImages + localImages;
+
+  // Tasques amb descripció
+  const tasksWithDescription = await this.countDocuments({
+    ...query,
+    description: { $exists: true, $ne: '' }
+  });
+
+  // Estadístiques recents
+  const tasksThisMonth = await this.countDocuments({
+    ...query,
+    createdAt: { $gte: startOfMonth }
+  });
+
+  const tasksThisWeek = await this.countDocuments({
+    ...query,
+    createdAt: { $gte: startOfWeek }
+  });
+
+  const tasksToday = await this.countDocuments({
+    ...query,
+    createdAt: { $gte: startOfDay }
+  });
+
+  const completedThisMonth = await this.countDocuments({
+    ...query,
+    completed: true,
+    updatedAt: { $gte: startOfMonth }
+  });
+
+  return {
+    overview: {
+      totalTasks,
+      completedTasks,
+      pendingTasks,
+      completionRate: parseFloat(completionRate)
+    },
+    financial: {
+      totalCost,
+      completedTasksCost,
+      pendingTasksCost,
+      averageCostPerTask: parseFloat(averageCostPerTask)
+    },
+    time: {
+      totalHoursEstimated,
+      totalHoursReal,
+      timeEfficiency: parseFloat(timeEfficiency),
+      hoursSaved
+    },
+    recent: {
+      tasksThisMonth,
+      completedThisMonth,
+      tasksThisWeek,
+      tasksToday
+    },
+    misc: {
+      tasksWithDescription,
+      customImages,
+      defaultImages,
+      imageStats: {
+        cloudinaryImages,
+        localImages,
+        defaultImages
+      }
+    }
+  };
 };
 
-module.exports = TaskModel;
+// ============================================
+// CREAR I EXPORTAR MODEL
+// ============================================
+
+const Task = mongoose.model('Task', taskSchema);
+
+module.exports = Task;
