@@ -1,308 +1,222 @@
-// ============================================
-// CONTROLADOR DE TASQUES (MODIFICAT)
-// ============================================
-
 const Task = require('../models/Task');
-const fs = require('fs');
-const path = require('path');
+const ErrorResponse = require('../utils/errorResponse');
 
-// ============================================
-// FUNCIONS AUXILIARS
-// ============================================
-
-// Eliminar imatge local si existeix
-const deleteLocalImage = (imageUrl) => {
-  if (imageUrl && imageUrl.includes('/uploads/')) {
-    const filename = imageUrl.split('/uploads/')[1];
-    const filePath = path.join(__dirname, '..', 'uploads', filename);
-    
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      console.log('✅ Imatge local eliminada:', filename);
-    }
-  }
-};
-
-// ============================================
-// CONTROLADORS MODIFICATS PER AUTENTICACIÓ
-// ============================================
-
-// Obtenir totes les tasques DE L'USUARI AUTENTICAT
-const getAllTasks = async (req, res) => {
+/**
+ * @desc    Obtenir totes les tasques
+ * @route   GET /api/tasks
+ * @access  Private (tasks:read)
+ */
+exports.getTasks = async (req, res, next) => {
   try {
-    const tasks = await Task.find({ user: req.user._id });
-    
-    res.json({
+    const { 
+      status, 
+      priority, 
+      assignedTo, 
+      project,
+      search,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      page = 1,
+      limit = 10
+    } = req.query;
+
+    // Construir query
+    let query = {};
+
+    // Filtrar per estat
+    if (status) {
+      query.status = status;
+    }
+
+    // Filtrar per prioritat
+    if (priority) {
+      query.priority = priority;
+    }
+
+    // Filtrar per assignació
+    if (assignedTo) {
+      query.assignedTo = assignedTo;
+    }
+
+    // Filtrar per projecte
+    if (project) {
+      query.project = project;
+    }
+
+    // Cerca global
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Verificar si l'usuari només pot veure les seves tasques
+    if (!(await req.user.hasPermission('tasks:read'))) {
+      query.$or = [
+        { createdBy: req.user.id },
+        { assignedTo: req.user.id }
+      ];
+    }
+
+    // Paginació
+    const pageInt = parseInt(page);
+    const limitInt = parseInt(limit);
+    const skip = (pageInt - 1) * limitInt;
+
+    // Sort
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    // Executar consulta
+    const [tasks, total] = await Promise.all([
+      Task.find(query)
+        .populate('createdBy', 'name email')
+        .populate('assignedTo', 'name email')
+        .populate('project', 'name')
+        .sort(sort)
+        .skip(skip)
+        .limit(limitInt),
+      Task.countDocuments(query)
+    ]);
+
+    res.status(200).json({
       success: true,
       count: tasks.length,
+      total,
+      totalPages: Math.ceil(total / limitInt),
+      currentPage: pageInt,
       data: tasks
     });
   } catch (error) {
-    console.error('❌ Error al obtenir tasques:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtenir les tasques',
-      error: error.message
-    });
+    next(error);
   }
 };
 
-// Obtenir tasca per ID (només si pertany a l'usuari)
-const getTaskById = async (req, res) => {
+/**
+ * @desc    Obtenir tasca per ID
+ * @route   GET /api/tasks/:id
+ * @access  Private (tasks:read)
+ */
+exports.getTask = async (req, res, next) => {
   try {
-    const task = await Task.findOne({ 
-      _id: req.params.id, 
-      user: req.user._id 
-    });
+    const task = await Task.findById(req.params.id)
+      .populate('createdBy', 'name email')
+      .populate('assignedTo', 'name email')
+      .populate('project', 'name')
+      .populate('comments.user', 'name email');
 
     if (!task) {
-      return res.status(404).json({
-        success: false,
-        message: 'Tasca no trobada'
-      });
+      return next(new ErrorResponse(`Tasca no trobada amb ID ${req.params.id}`, 404));
     }
 
-    res.json({
+    // Verificar permisos
+    if (!(await task.canView(req.user.id))) {
+      return next(new ErrorResponse('No tens permís per veure aquesta tasca', 403));
+    }
+
+    res.status(200).json({
       success: true,
       data: task
     });
   } catch (error) {
-    console.error('❌ Error al obtenir tasca:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtenir la tasca',
-      error: error.message
-    });
+    next(error);
   }
 };
 
-// Crear nova tasca (associada automàticament a l'usuari)
-const createTask = async (req, res) => {
+/**
+ * @desc    Crear nova tasca
+ * @route   POST /api/tasks
+ * @access  Private (tasks:create)
+ */
+exports.createTask = async (req, res, next) => {
   try {
-    const taskData = req.body;
+    // Afegir creador a la tasca
+    req.body.createdBy = req.user.id;
 
-    if (!taskData.title || taskData.title.trim() === '') {
-      return res.status(400).json({
-        success: false,
-        message: 'El títol és obligatori'
-      });
+    const task = await Task.create(req.body);
+
+    // Populate creador
+    await task.populate('createdBy', 'name email');
+    
+    if (task.assignedTo) {
+      await task.populate('assignedTo', 'name email');
     }
-
-    // Afegir l'ID de l'usuari a la tasca
-    taskData.user = req.user._id;
-
-    const newTask = await Task.create(taskData);
 
     res.status(201).json({
       success: true,
       message: 'Tasca creada correctament',
-      data: newTask
+      data: task
     });
   } catch (error) {
-    console.error('❌ Error al crear tasca:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al crear la tasca',
-      error: error.message
-    });
+    next(error);
   }
 };
 
-// Actualitzar tasca (només si pertany a l'usuari)
-const updateTask = async (req, res) => {
+/**
+ * @desc    Actualitzar tasca
+ * @route   PUT /api/tasks/:id
+ * @access  Private (tasks:update)
+ */
+exports.updateTask = async (req, res, next) => {
   try {
-    const task = await Task.findOneAndUpdate(
-      { 
-        _id: req.params.id, 
-        user: req.user._id 
-      },
-      req.body,
-      { 
-        new: true, 
-        runValidators: true 
-      }
-    );
+    let task = await Task.findById(req.params.id);
 
     if (!task) {
-      return res.status(404).json({
-        success: false,
-        message: 'Tasca no trobada'
-      });
+      return next(new ErrorResponse(`Tasca no trobada amb ID ${req.params.id}`, 404));
     }
 
-    res.json({
+    // Verificar permisos
+    if (!(await task.canEdit(req.user.id))) {
+      return next(new ErrorResponse('No tens permís per editar aquesta tasca', 403));
+    }
+
+    // Actualitzar tasca
+    task = await Task.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true
+    })
+    .populate('createdBy', 'name email')
+    .populate('assignedTo', 'name email')
+    .populate('project', 'name');
+
+    res.status(200).json({
       success: true,
       message: 'Tasca actualitzada correctament',
       data: task
     });
   } catch (error) {
-    console.error('❌ Error al actualitzar tasca:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al actualitzar la tasca',
-      error: error.message
-    });
+    next(error);
   }
 };
 
-// Eliminar tasca (només si pertany a l'usuari)
-const deleteTask = async (req, res) => {
+/**
+ * @desc    Eliminar tasca
+ * @route   DELETE /api/tasks/:id
+ * @access  Private (tasks:delete)
+ */
+exports.deleteTask = async (req, res, next) => {
   try {
-    const task = await Task.findOneAndDelete({ 
-      _id: req.params.id, 
-      user: req.user._id 
-    });
+    const task = await Task.findById(req.params.id);
 
     if (!task) {
-      return res.status(404).json({
-        success: false,
-        message: 'Tasca no trobada'
-      });
+      return next(new ErrorResponse(`Tasca no trobada amb ID ${req.params.id}`, 404));
     }
 
-    // Eliminar imatge local associada
-    deleteLocalImage(task.image);
-
-    res.json({
-      success: true,
-      message: 'Tasca i imatge associada eliminades correctament',
-      data: task
-    });
-  } catch (error) {
-    console.error('❌ Error al eliminar tasca:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al eliminar la tasca',
-      error: error.message
-    });
-  }
-};
-
-// Actualitzar imatge (només si pertany a l'usuari)
-const updateTaskImage = async (req, res) => {
-  try {
-    const { image } = req.body;
-
-    if (!image || image.trim() === '') {
-      return res.status(400).json({
-        success: false,
-        message: 'La URL de la imatge és obligatòria'
-      });
+    // Verificar permisos
+    if (!(await task.canDelete(req.user.id))) {
+      return next(new ErrorResponse('No tens permís per eliminar aquesta tasca', 403));
     }
 
-    // Buscar tasca per verificar propietat i obtenir imatge actual
-    const existingTask = await Task.findOne({ 
-      _id: req.params.id, 
-      user: req.user._id 
-    });
+    await task.deleteOne();
 
-    if (!existingTask) {
-      return res.status(404).json({
-        success: false,
-        message: 'Tasca no trobada'
-      });
-    }
-
-    // Eliminar imatge local anterior
-    deleteLocalImage(existingTask.image);
-
-    // Actualitzar imatge
-    const task = await Task.findOneAndUpdate(
-      { 
-        _id: req.params.id, 
-        user: req.user._id 
-      },
-      { image },
-      { new: true }
-    );
-
-    res.json({
+    res.status(200).json({
       success: true,
-      message: 'Imatge actualitzada correctament',
-      data: task
+      message: 'Tasca eliminada correctament',
+      data: {}
     });
   } catch (error) {
-    console.error('❌ Error al actualitzar imatge:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al actualitzar la imatge',
-      error: error.message
-    });
+    next(error);
   }
-};
-
-// Restablir imatge per defecte (només si pertany a l'usuari)
-const resetTaskImageToDefault = async (req, res) => {
-  try {
-    // Buscar tasca per verificar propietat i obtenir imatge actual
-    const existingTask = await Task.findOne({ 
-      _id: req.params.id, 
-      user: req.user._id 
-    });
-
-    if (!existingTask) {
-      return res.status(404).json({
-        success: false,
-        message: 'Tasca no trobada'
-      });
-    }
-
-    // Eliminar imatge local anterior
-    deleteLocalImage(existingTask.image);
-
-    // Restablir imatge per defecte
-    const task = await Task.findOneAndUpdate(
-      { 
-        _id: req.params.id, 
-        user: req.user._id 
-      },
-      { 
-        image: 'http://localhost:3000/images/default-task.jpg' 
-      },
-      { new: true }
-    );
-
-    res.json({
-      success: true,
-      message: 'Imatge restablerta a la per defecte',
-      data: task
-    });
-  } catch (error) {
-    console.error('❌ Error al restablir imatge:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al restablir la imatge',
-      error: error.message
-    });
-  }
-};
-
-// Obtenir estadístiques (només de les tasques de l'usuari)
-const getTaskStats = async (req, res) => {
-  try {
-    const stats = await Task.getStats(req.user._id);
-    
-    res.json({
-      success: true,
-      data: stats
-    });
-  } catch (error) {
-    console.error('❌ Error al obtenir estadístiques:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtenir estadístiques',
-      error: error.message
-    });
-  }
-};
-
-module.exports = {
-  getAllTasks,
-  getTaskById,
-  createTask,
-  updateTask,
-  deleteTask,
-  updateTaskImage,
-  resetTaskImageToDefault,
-  getTaskStats
 };

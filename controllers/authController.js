@@ -1,232 +1,312 @@
-// ============================================
-// CONTROLADOR D'AUTENTICACIÓ
-// ============================================
-
 const User = require('../models/User');
-const { generateToken } = require('../utils/generateToken');
-
-// ============================================
-// FUNCIONS DEL CONTROLADOR
-// ============================================
+const Role = require('../models/Role');
+const Permission = require('../models/Permission');
 
 /**
- * Registrar nou usuari
+ * @desc    Registrar usuari
+ * @route   POST /api/auth/register
+ * @access  Public
  */
-const register = async (req, res) => {
+exports.register = async (req, res, next) => {
   try {
     const { name, email, password } = req.body;
 
-    // 1. Comprovar si l'email ja existeix
+    // Validacions
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Si us plau, introdueix nom, email i contrasenya'
+      });
+    }
+
+    // Verificar si l'usuari ja existeix
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        error: 'Aquest email ja està registrat'
+        error: 'Ja existeix un usuari amb aquest email'
       });
     }
 
-    // 2. Crear nou usuari
+    // Obtenir rol "user" per defecte
+    const userRole = await Role.findOne({ name: 'user' });
+    if (!userRole) {
+      return res.status(500).json({
+        success: false,
+        error: 'Error de configuració del sistema: Rol "user" no trobat'
+      });
+    }
+
+    // Crear usuari
     const user = await User.create({
       name,
       email,
-      password
+      password,
+      roles: [userRole._id]
     });
 
-    // 3. Generar token
-    const token = generateToken(user);
+    // Generar token
+    const token = user.generateAuthToken();
 
-    // 4. Retornar resposta
+    // Obtenir permisos
+    const permissions = await user.getEffectivePermissions();
+
     res.status(201).json({
       success: true,
       message: 'Usuari registrat correctament',
       data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          roles: [userRole.name]
+        },
         token,
-        user
+        permissions
       }
     });
   } catch (error) {
-    console.error('❌ Error al registrar usuari:', error);
-    
-    // Error de duplicat de MongoDB
-    if (error.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        error: 'Aquest email ja està registrat'
-      });
-    }
-
+    console.error('Error al registrar:', error);
     res.status(500).json({
       success: false,
-      error: 'Error del servidor al registrar usuari'
+      error: 'Error intern del servidor'
     });
   }
 };
 
 /**
- * Iniciar sessió
+ * @desc    Iniciar sessió
+ * @route   POST /api/auth/login
+ * @access  Public
  */
-const login = async (req, res) => {
+exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    // 1. Buscar usuari per email (incloent contrasenya)
-    const user = await User.findOne({ email }).select('+password');
-    
+    // Validar email i contrasenya
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Si us plau, introdueix email i contrasenya'
+      });
+    }
+
+    // Buscar usuari amb contrasenya
+    const user = await User.findOne({ email })
+      .select('+password')
+      .populate({
+        path: 'roles',
+        populate: {
+          path: 'permissions',
+          model: 'Permission'
+        }
+      });
+
     if (!user) {
       return res.status(401).json({
         success: false,
-        error: 'Credencials incorrectes'
+        error: 'Credencials invàlides'
       });
     }
 
-    // 2. Comparar contrasenyes
-    const isPasswordCorrect = await user.comparePassword(password);
-    
-    if (!isPasswordCorrect) {
+    // Verificar si l'usuari està actiu
+    if (!user.isActive) {
       return res.status(401).json({
         success: false,
-        error: 'Credencials incorrectes'
+        error: 'Compte desactivat. Contacta amb l\'administrador.'
       });
     }
 
-    // 3. Generar token
-    const token = generateToken(user);
+    // ✅ CORREGIT: usar comparePassword
+    const isMatch = await user.comparePassword(password);
 
-    // 4. Eliminar contrasenya de la resposta
-    const userWithoutPassword = user.toJSON();
-
-    // 5. Retornar resposta
-    res.json({
-      success: true,
-      message: 'Sessió iniciada correctament',
-      data: {
-        token,
-        user: userWithoutPassword
-      }
-    });
-  } catch (error) {
-    console.error('❌ Error al iniciar sessió:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Error del servidor al iniciar sessió'
-    });
-  }
-};
-
-/**
- * Obtenir perfil de l'usuari actual
- */
-const getMe = async (req, res) => {
-  try {
-    res.json({
-      success: true,
-      data: req.user
-    });
-  } catch (error) {
-    console.error('❌ Error al obtenir perfil:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Error del servidor al obtenir perfil'
-    });
-  }
-};
-
-/**
- * Actualitzar perfil d'usuari
- */
-const updateProfile = async (req, res) => {
-  try {
-    const { name, email } = req.body;
-    const updateData = {};
-
-    // 1. Preparar dades a actualitzar
-    if (name !== undefined) updateData.name = name;
-    if (email !== undefined) updateData.email = email;
-
-    // 2. Si canvia l'email, comprovar que no estigui en ús
-    if (email && email !== req.user.email) {
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({
-          success: false,
-          error: 'Aquest email ja està registrat'
-        });
-      }
-    }
-
-    // 3. Actualitzar usuari
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user._id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    // 4. Retornar resposta
-    res.json({
-      success: true,
-      message: 'Perfil actualitzat correctament',
-      data: updatedUser
-    });
-  } catch (error) {
-    console.error('❌ Error al actualitzar perfil:', error);
-    
-    // Error de duplicat de MongoDB
-    if (error.code === 11000) {
-      return res.status(400).json({
+    if (!isMatch) {
+      return res.status(401).json({
         success: false,
-        error: 'Aquest email ja està registrat'
+        error: 'Credencials invàlides'
       });
     }
 
+    // Generar token
+    const token = user.generateAuthToken();
+
+    // Actualitzar últim login
+    await user.updateLastLogin();
+
+    // Obtenir permisos efectius
+    const permissions = await user.getEffectivePermissions();
+
+    res.status(200).json({
+      success: true,
+      message: 'Login correcte',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          roles: user.roles.map(role => role.name)
+        },
+        token,
+        permissions
+      }
+    });
+  } catch (error) {
+    console.error('Error al login:', error);
     res.status(500).json({
       success: false,
-      error: 'Error del servidor al actualitzar perfil'
+      error: 'Error intern del servidor'
     });
   }
 };
 
 /**
- * Canviar contrasenya
+ * @desc    Obtenir perfil d'usuari
+ * @route   GET /api/auth/me
+ * @access  Private
  */
-const changePassword = async (req, res) => {
+exports.getMe = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id)
+      .populate({
+        path: 'roles',
+        populate: {
+          path: 'permissions',
+          model: 'Permission'
+        }
+      });
+
+    // Obtenir permisos efectius
+    const permissions = await user.getEffectivePermissions();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          roles: user.roles,
+          isActive: user.isActive,
+          createdAt: user.createdAt,
+          lastLogin: user.lastLogin
+        },
+        permissions
+      }
+    });
+  } catch (error) {
+    console.error('Error al obtenir perfil:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error intern del servidor'
+    });
+  }
+};
+
+/**
+ * @desc    Tancar sessió
+ * @route   POST /api/auth/logout
+ * @access  Private
+ */
+exports.logout = (req, res, next) => {
+  res.status(200).json({
+    success: true,
+    message: 'Sessió tancada correctament',
+    data: {}
+  });
+};
+
+/**
+ * @desc    Actualitzar contrasenya
+ * @route   PUT /api/auth/updatepassword
+ * @access  Private
+ */
+exports.updatePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    // 1. Obtenir usuari complet (amb contrasenya)
-    const user = await User.findById(req.user._id).select('+password');
-
-    // 2. Verificar contrasenya actual
-    const isPasswordCorrect = await user.comparePassword(currentPassword);
-    
-    if (!isPasswordCorrect) {
-      return res.status(401).json({
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
         success: false,
-        error: 'La contrasenya actual és incorrecta'
+        error: 'Si us plau, introdueix la contrasenya actual i la nova'
       });
     }
 
-    // 3. Actualitzar amb nova contrasenya
+    const user = await User.findById(req.user._id).select('+password');
+
+    // ✅ CORREGIT: usar comparePassword
+    const isMatch = await user.comparePassword(currentPassword);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        error: 'Contrasenya actual incorrecta'
+      });
+    }
+
     user.password = newPassword;
     await user.save();
 
-    // 4. Retornar resposta
-    res.json({
+    const token = user.generateAuthToken();
+
+    res.status(200).json({
       success: true,
-      message: 'Contrasenya actualitzada correctament'
+      message: 'Contrasenya actualitzada correctament',
+      token
     });
   } catch (error) {
-    console.error('❌ Error al canviar contrasenya:', error);
+    console.error('Error al actualitzar contrasenya:', error);
     res.status(500).json({
       success: false,
-      error: 'Error del servidor al canviar contrasenya'
+      error: 'Error intern del servidor'
     });
   }
 };
 
-module.exports = {
-  register,
-  login,
-  getMe,
-  updateProfile,
-  changePassword
+/**
+ * @desc    Verificar permís d'usuari
+ * @route   POST /api/auth/check-permission
+ * @access  Private
+ */
+exports.checkUserPermission = async (req, res, next) => {
+  try {
+    const { permission } = req.body;
+
+    if (!permission) {
+      return res.status(400).json({
+        success: false,
+        error: 'El permís és obligatori'
+      });
+    }
+
+    // Verificar que el permís existeix
+    const permissionExists = await Permission.findOne({ name: permission });
+    
+    if (!permissionExists) {
+      return res.status(400).json({
+        success: false,
+        error: `El permís "${permission}" no existeix`
+      });
+    }
+
+    // Verificar si l'usuari té el permís
+    const user = await User.findById(req.user._id);
+    const hasPermission = await user.hasPermission(permission);
+
+    const statusCode = hasPermission ? 200 : 403;
+
+    res.status(statusCode).json({
+      success: true,
+      hasPermission,
+      permission,
+      message: hasPermission 
+        ? 'Tens permís per fer aquesta acció'
+        : 'No tens permís per fer aquesta acció'
+    });
+  } catch (error) {
+    console.error('Error al verificar permís:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error intern del servidor'
+    });
+  }
 };

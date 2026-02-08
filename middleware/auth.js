@@ -1,69 +1,69 @@
-// ============================================
-// MIDDLEWARE D'AUTENTICACIÓ JWT
-// ============================================
-
-const { verifyToken } = require('../utils/generateToken');
+const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-/**
- * Middleware per autenticar usuaris mitjançant JWT
- */
-const authenticate = async (req, res, next) => {
+const auth = async (req, res, next) => {
   try {
-    // 1. Obtenir token dels headers
-    const authHeader = req.headers.authorization;
+    // Obtenir token del header
+    const token = req.header('Authorization')?.replace('Bearer ', '');
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!token) {
       return res.status(401).json({
         success: false,
-        error: 'No autoritzat. Token no proporcionat'
+        error: 'Accés denegat. No hi ha token.'
       });
     }
-
-    // 2. Extreure token (eliminar 'Bearer ')
-    const token = authHeader.split(' ')[1];
-
-    // 3. Verificar token
-    const decoded = verifyToken(token);
-
-    // 4. Buscar usuari a la base de dades (sense la contrasenya)
-    const user = await User.findById(decoded.userId).select('-password');
-
+    
+    // Verificar token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key-aqui');
+    
+    // Buscar usuari
+    const user = await User.findById(decoded.id).select('-password');
+    
     if (!user) {
       return res.status(401).json({
         success: false,
-        error: 'Usuari no trobat o token invàlid'
+        error: 'Accés denegat. Usuari no trobat.'
       });
     }
-
-    // 5. Afegir usuari a la request
+    
+    // Verificar si l'usuari està actiu
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        error: 'Accés denegat. Compte desactivat.'
+      });
+    }
+    
+    // Actualitzar últim login
+    user.updateLastLogin().catch(console.error);
+    
+    // Afegir usuari a la petició
     req.user = user;
-
-    // 6. Continuar
+    req.token = token;
+    
     next();
   } catch (error) {
-    // Errors específics de JWT
+    console.error('Error d\'autenticació:', error);
+    
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({
         success: false,
-        error: 'Token invàlid'
+        error: 'Accés denegat. Token invàlid.'
       });
     }
-
+    
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
-        error: 'Token expirat'
+        error: 'Accés denegat. Token expirat.'
       });
     }
-
-    // Altres errors
-    console.error('❌ Error de autenticació:', error);
+    
     res.status(500).json({
       success: false,
-      error: 'Error del servidor en autenticació'
+      error: 'Error intern del servidor'
     });
   }
 };
 
-module.exports = authenticate;
+module.exports = auth;

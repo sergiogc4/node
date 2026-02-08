@@ -1,17 +1,11 @@
-// ============================================
-// MODEL D'USUARI - MONGODB
-// ============================================
-
 const mongoose = require('mongoose');
-const bcrypt = require('bcrypt');
-
-// ============================================
-// ESQUEMA D'USUARI
-// ============================================
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
+    required: [true, 'El nom és obligatori'],
     trim: true
   },
   email: {
@@ -19,47 +13,45 @@ const userSchema = new mongoose.Schema({
     required: [true, 'L\'email és obligatori'],
     unique: true,
     lowercase: true,
-    trim: true,
-    match: [/^\S+@\S+\.\S+$/, 'Si us plau, introdueix un email vàlid']
+    trim: true
   },
   password: {
     type: String,
     required: [true, 'La contrasenya és obligatòria'],
-    minlength: [6, 'La contrasenya ha de tenir mínim 6 caràcters'],
-    select: false // No retornar la contrasenya per defecte
+    minlength: [6, 'La contrasenya ha de tenir com a mínim 6 caràcters'],
+    select: false
   },
-  role: {
-    type: String,
-    enum: ['user', 'admin'],
-    default: 'user'
+  roles: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Role',
+    required: true
+  }],
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  lastLogin: {
+    type: Date
   },
   createdAt: {
     type: Date,
     default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
   }
 }, {
-  timestamps: { createdAt: 'createdAt', updatedAt: 'updatedAt' }
+  timestamps: false
 });
 
-// ============================================
-// MIDDLEWARE (HOOKS) DE MONGOOSE
-// ============================================
+// Indexos per millorar rendiment
+userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ roles: 1 });
+userSchema.index({ isActive: 1 });
 
-// Xifrar contrasenya abans de guardar (només si s'ha modificat)
+// Encriptar contrasenya abans de guardar
 userSchema.pre('save', async function(next) {
-  // Si la contrasenya no s'ha modificat, continuar
-  if (!this.isModified('password')) {
-    return next();
-  }
+  if (!this.isModified('password')) return next();
   
   try {
-    // Generar salt
     const salt = await bcrypt.genSalt(10);
-    // Xifrar contrasenya amb el salt
     this.password = await bcrypt.hash(this.password, salt);
     next();
   } catch (error) {
@@ -67,31 +59,89 @@ userSchema.pre('save', async function(next) {
   }
 });
 
-// Actualitzar updatedAt en cada actualització
-userSchema.pre('findOneAndUpdate', function(next) {
-  this.set({ updatedAt: new Date() });
-  next();
-});
-
-// ============================================
-// MÈTODES DE L'ESQUEMA
-// ============================================
-
-// Mètode per comparar contrasenyes
+// Comparar contrasenya
 userSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Mètode per eliminar la contrasenya al retornar l'objecte JSON
-userSchema.methods.toJSON = function() {
-  const user = this.toObject();
-  delete user.password;
-  return user;
+// Generar token JWT
+userSchema.methods.generateAuthToken = function() {
+  return jwt.sign(
+    { 
+      id: this._id,
+      email: this.email,
+      roles: this.roles 
+    },
+    process.env.JWT_SECRET || 'secret-key-aqui',
+    { expiresIn: process.env.JWT_EXPIRE || '24h' }
+  );
 };
 
-// ============================================
-// CREAR I EXPORTAR MODEL
-// ============================================
+// Mètodes per gestionar rols i permisos
+userSchema.methods.addRole = async function(roleId) {
+  if (!this.roles.includes(roleId)) {
+    this.roles.push(roleId);
+    await this.save();
+  }
+  return this;
+};
+
+userSchema.methods.removeRole = async function(roleId) {
+  const index = this.roles.indexOf(roleId);
+  if (index > -1) {
+    this.roles.splice(index, 1);
+    await this.save();
+  }
+  return this;
+};
+
+userSchema.methods.hasRole = function(roleId) {
+  return this.roles.includes(roleId);
+};
+
+userSchema.methods.getRoles = async function() {
+  return await this.populate('roles');
+};
+
+userSchema.methods.hasPermission = async function(permissionName) {
+  await this.populate({
+    path: 'roles',
+    populate: {
+      path: 'permissions',
+      model: 'Permission'
+    }
+  });
+  
+  for (const role of this.roles) {
+    const hasPerm = await role.hasPermission(permissionName);
+    if (hasPerm) return true;
+  }
+  
+  return false;
+};
+
+userSchema.methods.getEffectivePermissions = async function() {
+  await this.populate({
+    path: 'roles',
+    populate: {
+      path: 'permissions',
+      model: 'Permission'
+    }
+  });
+  
+  const permissions = new Set();
+  for (const role of this.roles) {
+    const rolePerms = await role.getPermissionNames();
+    rolePerms.forEach(perm => permissions.add(perm));
+  }
+  
+  return Array.from(permissions);
+};
+
+userSchema.methods.updateLastLogin = async function() {
+  this.lastLogin = Date.now();
+  await this.save();
+};
 
 const User = mongoose.model('User', userSchema);
 

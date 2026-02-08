@@ -1,0 +1,263 @@
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
+require('dotenv').config();
+
+// Importar models (per assegurar-se que es registrin)
+require('./models/User');
+require('./models/Permission');
+require('./models/Role');
+require('./models/AuditLog');
+
+// Importar middleware
+const { auditMiddleware } = require('./middleware/auditMiddleware');
+const auth = require('./middleware/auth');
+
+// Importar controladors
+const authController = require('./controllers/authController');
+
+// Importar rutes
+const authRoutes = require('./routes/authRoutes');
+const taskRoutes = require('./routes/taskRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const roleRoutes = require('./routes/roleRoutes');
+const permissionRoutes = require('./routes/permissionRoutes');
+const auditRoutes = require('./routes/auditRoutes');
+
+// Importar scripts de seed
+const seedPermissions = require('./utils/seedPermissions');
+const seedRoles = require('./utils/seedRoles');
+
+const app = express();
+
+// Middleware de seguretat
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Logging
+app.use(morgan('combined'));
+
+// Rate limiting per a rutes de login i registre
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minuts
+  max: 50, // límit de 50 peticions per finestra
+  message: 'Massa intents, si us plau intenta-ho de nou més tard'
+});
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+
+// Rate limiting per a rutes d'admin
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minuts
+  max: 100, // límit de 100 peticions per finestra
+  message: 'Massa peticions a l\'àrea d\'administració'
+});
+app.use('/api/admin/*', adminLimiter);
+
+// Connexió a MongoDB
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/task-manager', {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log(`✅ MongoDB connectat: ${conn.connection.host}`);
+    
+    // Executar seed de permisos i rols
+    console.log('🌱 Executant seed de permisos i rols...');
+    try {
+      await seedPermissions();
+      await seedRoles();
+      console.log('✅ Seed completat correctament');
+    } catch (seedError) {
+      console.error('⚠️  Error en seed, continuant amb execució:', seedError.message);
+    }
+  } catch (error) {
+    console.error('❌ Error de connexió a MongoDB:', error.message);
+    process.exit(1);
+  }
+};
+connectDB();
+
+// Rutes públiques
+app.use('/api/auth', authRoutes);
+
+// Middleware d'autenticació per a rutes protegides
+app.use('/api/*', (req, res, next) => {
+  // Excloure rutes públiques
+  if (req.path.startsWith('/auth/')) {
+    return next();
+  }
+  auth(req, res, next);
+});
+
+// Middleware d'auditoria per a totes les rutes autenticades
+app.use('/api/*', auditMiddleware);
+
+// Rutes protegides
+app.use('/api/tasks', taskRoutes);
+app.use('/api/admin/roles', roleRoutes);
+app.use('/api/admin/permissions', permissionRoutes);
+app.use('/api/admin/audit-logs', auditRoutes);
+app.use('/api/admin/users', adminRoutes);
+
+// Ruta per verificar permisos
+app.post('/api/auth/check-permission', auth, async (req, res) => {
+  try {
+    const { permission } = req.body;
+    
+    if (!permission) {
+      return res.status(400).json({
+        success: false,
+        error: 'El nom del permís és obligatori'
+      });
+    }
+    
+    // Verificar si el permís existeix
+    const Permission = require('./models/Permission');
+    const permissionExists = await Permission.findOne({ name: permission });
+    
+    if (!permissionExists) {
+      return res.status(400).json({
+        success: false,
+        error: `El permís '${permission}' no existeix`
+      });
+    }
+    
+    // Verificar si l'usuari té el permís
+    const hasPermission = await req.user.hasPermission(permission);
+    
+    res.status(200).json({
+      success: true,
+      hasPermission,
+      message: hasPermission 
+        ? 'Tens permís per fer aquesta acció' 
+        : 'No tens permís per fer aquesta acció',
+      permission
+    });
+  } catch (error) {
+    console.error('Error al verificar permís:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error intern del servidor'
+    });
+  }
+});
+
+// Ruta de verificació de salut
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Sistema de rols i permisos funcionant correctament',
+    timestamp: new Date().toISOString(),
+    services: {
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      audit: 'active',
+      permissions: 'active',
+      roles: 'active'
+    }
+  });
+});
+
+// Ruta d'informació del sistema
+app.get('/api/system/info', auth, async (req, res) => {
+  try {
+    const Permission = require('./models/Permission');
+    const Role = require('./models/Role');
+    const User = require('./models/User');
+    const AuditLog = require('./models/AuditLog');
+    
+    const [
+      totalPermissions,
+      totalRoles,
+      totalUsers,
+      totalAuditLogs,
+      recentLogs
+    ] = await Promise.all([
+      Permission.countDocuments(),
+      Role.countDocuments(),
+      User.countDocuments(),
+      AuditLog.countDocuments(),
+      AuditLog.find().sort({ timestamp: -1 }).limit(5)
+    ]);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        system: {
+          name: 'Sistema Avançat de Rols i Permisos',
+          version: '1.0.0',
+          environment: process.env.NODE_ENV || 'development'
+        },
+        stats: {
+          permissions: totalPermissions,
+          roles: totalRoles,
+          users: totalUsers,
+          auditLogs: totalAuditLogs
+        },
+        recentActivity: recentLogs.map(log => ({
+          action: log.action,
+          user: log.userName,
+          status: log.status,
+          timestamp: log.timestamp
+        })),
+        user: {
+          id: req.user._id,
+          name: req.user.name,
+          email: req.user.email,
+          roles: await req.user.getRoles(),
+          permissions: await req.user.getEffectivePermissions()
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error al obtenir informació del sistema:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error intern del servidor'
+    });
+  }
+});
+
+// Middleware per a errors 404
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Ruta no trobada'
+  });
+});
+
+// Middleware de gestió d'errors
+app.use((err, req, res, next) => {
+  console.error('Error no capturat:', err);
+  
+  // Registrar error a l'auditoria si hi ha usuari
+  if (req.auditLog && req.user) {
+    req.auditLog.status = 'error';
+    req.auditLog.errorMessage = err.message;
+    const AuditLog = require('./models/AuditLog');
+    AuditLog.log(req.auditLog).catch(console.error);
+  }
+  
+  res.status(err.status || 500).json({
+    success: false,
+    error: err.message || 'Error intern del servidor',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor funcionant al port ${PORT}`);
+  console.log(`🔐 Sistema de rols i permisos actiu`);
+  console.log(`📊 Auditoria activada`);
+  console.log(`🌐 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🔍 System info: http://localhost:${PORT}/api/system/info (requereix autenticació)`);
+});
+
+module.exports = app;

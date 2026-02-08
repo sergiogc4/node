@@ -1,18 +1,33 @@
-# ============================================
-# GITIGNORE - GESTOR TASQUES API
-# ============================================
-
-# Dependencies
+# Dependències
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Environment variables
+# Entorn
 .env
 .env.local
-.env.development
-.env.production
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Uploaded images (local)
-uploads/*
-!uploads/.gitkeep
+# Executables
+dist/
+build/
 
-# Temporary
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operatiu
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# MongoDB
+data/db/

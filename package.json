@@ -1,29 +1,32 @@
 {
-  "name": "gestor-tasques-api",
+  "name": "task-manager-api",
   "version": "1.0.0",
-  "description": "API de gestió de tasques amb autenticació JWT",
-  "main": "index.js",
+  "description": "Sistema Avançat de Rols i Permisos amb Auditoria",
+  "main": "app.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "seed:permissions": "node utils/seedPermissions.js",
+    "seed:roles": "node utils/seedRoles.js",
+    "seed:all": "npm run seed:permissions && npm run seed:roles",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["api", "tasks", "authentication", "jwt", "mongodb"],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "bcrypt": "^5.1.1",
-    "cloudinary": "^2.8.0",
+    "express": "^4.18.2",
+    "mongoose": "^7.0.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.0",
+    "dotenv": "^16.0.3",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "express-validator": "^7.2.0",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.19.3",
-    "morgan": "^1.10.1",
-    "multer": "^2.0.2"
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^6.7.0",
+    "express-validator": "^6.14.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
-  }
+    "nodemon": "^2.0.22"
+  },
+  "keywords": ["rbac", "permissions", "audit", "roles", "security"],
+  "author": "Task Manager Team",
+  "license": "MIT"
 }
